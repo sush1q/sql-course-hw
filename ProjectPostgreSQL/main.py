@@ -81,15 +81,18 @@ class Main:
 
     def show_cities(self):
         print("Просмотр списка городов!\n№\tНазвание")
-        self.city_rows = []
+        self.city_name = None
+        self.excursion_rows = []
+        self.city_rows = None
         try:
             self.city_rows = CitiesTable().all()
         except psycopg2.Error as error:
             self.show_db_error(error)
-        for number, city in enumerate(self.city_rows, start=1):
-            print(str(number) + "\t" + city[0])
-        if not self.city_rows:
-            print("Городов пока нет.")
+        if self.city_rows is not None:
+            for number, city in enumerate(self.city_rows, start=1):
+                print(str(number) + "\t" + city[0])
+            if not self.city_rows:
+                print("Городов пока нет.")
         menu = """Дальнейшие операции:
     0 - возврат в главное меню;
     3 - добавление нового города;
@@ -108,8 +111,15 @@ class Main:
                 elif next_step == "8":
                     self.show_edit_city()
                     return "1"
-                elif next_step == "6" or next_step == "7":
-                    print("Пока не реализовано!")
+                elif next_step in ("6", "7", "10"):
+                    if self.city_name is None:
+                        print("Сначала выберите город!")
+                    elif next_step == "6":
+                        self.show_add_excursion()
+                    elif next_step == "7":
+                        self.show_delete_excursion()
+                    else:
+                        self.show_attach_excursion()
                     next_step = "5"
                 elif next_step == "5":
                     next_step = self.show_excursions_by_city()
@@ -137,27 +147,122 @@ class Main:
                 self.show_db_error(error)
 
     def show_excursions_by_city(self):
-        name = self.choose_city()
-        if name is None:
+        if self.city_name is None:
+            self.city_name = self.choose_city()
+        if self.city_name is None:
             return '1'
-        print("Выбран город: " + name)
+        if CitiesTable().find_by_name(self.city_name) is None:
+            print("Выбранный город не существует. Обновите список!")
+            self.city_name = None
+            return '1'
+        print("Выбран город: " + self.city_name)
         print("Экскурсии:\n№\tНазвание\tСтоимость, руб.\tОписание")
-        rows = ExcursionsTable().all_by_city(name)
-        for number, excursion in enumerate(rows, start=1):
-            title, description, cost = excursion
+        self.excursion_rows = ExcursionsTable().all_by_city(self.city_name)
+        for number, excursion in enumerate(self.excursion_rows, start=1):
+            excursion_id, title, description, cost = excursion
             print(f"{number}\t{title}\t{cost:.2f}\t{description or '—'}")
-        if not rows:
+        if not self.excursion_rows:
             print("Для этого города экскурсий пока нет.")
         menu = """Дальнейшие операции:
     0 - возврат в главное меню;
     1 - возврат в просмотр городов;
+    6 - создание экскурсии в этом городе;
+    7 - удаление экскурсии целиком;
+    10 - добавление существующей экскурсии в этот город;
     9 - выход."""
         print(menu)
         while True:
             next_step = self.read_next_step()
-            if next_step in ('0', '1', '9'):
+            if next_step in ('0', '1', '6', '7', '10', '9'):
                 return next_step
             print("Выбрано неверное число! Повторите ввод!")
+
+    def show_add_excursion(self):
+        while True:
+            title = input("Название экскурсии (/отмена - вернуться): ").strip()
+            if title == '/отмена':
+                return
+            if not title or '\x00' in title:
+                print("Введите непустое название без нулевых символов!")
+            else:
+                break
+        while True:
+            description = input("Описание, можно оставить пустым (/отмена - вернуться): ").strip()
+            if description == '/отмена':
+                return
+            if '\x00' in description:
+                print("Описание содержит недопустимый нулевой символ!")
+            else:
+                break
+        while True:
+            value = input("Стоимость в рублях (/отмена - вернуться): ").strip()
+            if value == '/отмена':
+                return
+            try:
+                cost = ExcursionsTable.validate_cost(value)
+                break
+            except ValueError as error:
+                print(error)
+        try:
+            ExcursionsTable().insert_one([title, description or None, cost], self.city_name)
+            print("Экскурсия создана и добавлена в выбранный город!")
+        except psycopg2.errors.ForeignKeyViolation:
+            print("Выбранный город больше не существует. Создание экскурсии отменено.")
+
+    def choose_excursion(self, rows):
+        if not rows:
+            print("Список экскурсий пуст.")
+            return None
+        while True:
+            value = input("Укажите номер строки экскурсии (0 - отмена): ").strip()
+            try:
+                number = int(value)
+            except ValueError:
+                print("Введите целый номер строки из показанного списка!")
+                continue
+            if number == 0:
+                return None
+            if 1 <= number <= len(rows):
+                return rows[number - 1]
+            print("Такого номера строки нет! Повторите ввод!")
+
+    def show_attach_excursion(self):
+        rows = ExcursionsTable().all()
+        print("Все экскурсии:\n№\tНазвание\tСтоимость, руб.\tОписание")
+        for number, excursion in enumerate(rows, start=1):
+            excursion_id, title, description, cost = excursion
+            print(f"{number}\t{title}\t{cost:.2f}\t{description or '—'}")
+        excursion = self.choose_excursion(rows)
+        if excursion is None:
+            return
+        try:
+            ExcursionCityTable().insert_one([self.city_name, excursion[0]])
+            print("Экскурсия добавлена в выбранный город!")
+        except psycopg2.errors.UniqueViolation:
+            print("Эта экскурсия уже добавлена в выбранный город.")
+        except psycopg2.errors.ForeignKeyViolation:
+            print("Город или экскурсия больше не существуют. Обновите список!")
+
+    def show_delete_excursion(self):
+        excursion = self.choose_excursion(self.excursion_rows)
+        if excursion is None:
+            return
+        excursion_id, title, description, cost = excursion
+        cities = ExcursionsTable().cities_by_excursion(excursion_id)
+        print(f"Будет удалена экскурсия «{title}», стоимость {cost:.2f} руб.")
+        print("Описание: " + (description or '—'))
+        print("Связанные города: " + (", ".join(city[0] for city in cities) or 'нет'))
+        print("Экскурсия будет удалена целиком, включая связи со всеми городами.")
+        while True:
+            answer = input("Удалить экскурсию? (да/нет): ").strip().lower()
+            if answer in ('да', 'д'):
+                ExcursionsTable().delete_one(excursion_id, self.city_name)
+                print("Экскурсия удалена!")
+                return
+            if answer in ('нет', 'н', ''):
+                print("Удаление отменено.")
+                return
+            print("Введите «да» или «нет»!")
 
     def read_city_name(self, prompt):
         while True:
@@ -170,6 +275,9 @@ class Main:
                 print(error)
 
     def choose_city(self):
+        if self.city_rows is None:
+            print("Список городов не загружен. Вернитесь к просмотру городов!")
+            return None
         if not self.city_rows:
             print("Список городов пуст. Сначала добавьте город!")
             return None

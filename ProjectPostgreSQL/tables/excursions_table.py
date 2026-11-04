@@ -15,7 +15,7 @@ class ExcursionsTable(DbTable):
                 "cost": ["numeric(10,2)", "NOT NULL", "CHECK(cost > 0)"]}
 
     def all_by_city(self, city):
-        query = ("SELECT e.name, e.description, e.cost FROM " + self.table_name() +
+        query = ("SELECT e.id, e.name, e.description, e.cost FROM " + self.table_name() +
                  " AS e JOIN " + ExcursionCityTable().table_name() +
                  " AS ec ON ec.excursion = e.id WHERE ec.city = %s ORDER BY e.name, e.id")
         with self.dbconn.conn:
@@ -23,7 +23,26 @@ class ExcursionsTable(DbTable):
                 cur.execute(query, (city,))
                 return cur.fetchall()
 
-    def insert_one(self, vals):
+    def all(self):
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute("SELECT id, name, description, cost FROM " + self.table_name() +
+                            " ORDER BY name, id")
+                return cur.fetchall()
+
+    @staticmethod
+    def validate_cost(value):
+        try:
+            cost = Decimal(str(value).replace(',', '.'))
+        except InvalidOperation:
+            raise ValueError("Стоимость должна быть числом!")
+        if not cost.is_finite() or not Decimal('0') < cost <= Decimal('99999999.99'):
+            raise ValueError("Стоимость должна быть больше нуля и не больше 99999999.99!")
+        if cost != cost.quantize(Decimal('0.01')):
+            raise ValueError("Укажите стоимость с точностью до копеек!")
+        return cost
+
+    def insert_one(self, vals, city=None):
         if len(vals) != 3:
             raise ValueError("Нужны название, описание и стоимость экскурсии!")
         name, description, cost = vals
@@ -33,14 +52,7 @@ class ExcursionsTable(DbTable):
             raise ValueError("Описание должно быть текстом!")
         if '\x00' in name or description is not None and '\x00' in description:
             raise ValueError("Текст содержит недопустимый нулевой символ!")
-        try:
-            cost = Decimal(str(cost).replace(',', '.'))
-        except InvalidOperation:
-            raise ValueError("Стоимость должна быть числом!")
-        if not cost.is_finite() or not Decimal('0') < cost <= Decimal('99999999.99'):
-            raise ValueError("Стоимость должна быть больше нуля и не больше 99999999.99!")
-        if cost != cost.quantize(Decimal('0.01')):
-            raise ValueError("Укажите стоимость с точностью до копеек!")
+        cost = self.validate_cost(cost)
         with self.dbconn.conn:
             with self.dbconn.conn.cursor() as cur:
                 # В исходной схеме id — integer без автоматической генерации, поэтому приходится переусложнять =(
@@ -52,4 +64,25 @@ class ExcursionsTable(DbTable):
                 cur.execute("INSERT INTO " + self.table_name() +
                             " (id, name, description, cost) VALUES (%s, %s, %s, %s)",
                             (excursion_id, name.strip(), description, cost))
+                if city is not None:
+                    cur.execute("INSERT INTO " + ExcursionCityTable().table_name() +
+                                " (city, excursion) VALUES (%s, %s)", (city, excursion_id))
         return excursion_id
+
+    def cities_by_excursion(self, excursion):
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute("SELECT city FROM " + ExcursionCityTable().table_name() +
+                            " WHERE excursion = %s ORDER BY city", (excursion,))
+                return cur.fetchall()
+
+    def delete_one(self, excursion, city):
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute("SELECT excursion FROM " + ExcursionCityTable().table_name() +
+                            " WHERE excursion = %s AND city = %s", (excursion, city))
+                if cur.fetchone() is None:
+                    raise ValueError("Экскурсия не связана с выбранным городом. Обновите список!")
+                cur.execute("DELETE FROM " + ExcursionCityTable().table_name() +
+                            " WHERE excursion = %s", (excursion,))
+                cur.execute("DELETE FROM " + self.table_name() + " WHERE id = %s", (excursion,))

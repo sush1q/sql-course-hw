@@ -18,6 +18,12 @@ class CitiesTable(DbTable):
                 cur.execute("SELECT name FROM " + self.table_name() + " ORDER BY name")
                 return cur.fetchall()
 
+    def find_by_name(self, name):
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute("SELECT name FROM " + self.table_name() + " WHERE name = %s", (name,))
+                return cur.fetchone()
+
     @staticmethod
     def validate_name(name):
         if not isinstance(name, str) or not name.strip():
