@@ -18,6 +18,21 @@ class CitiesTable(DbTable):
                 cur.execute("SELECT name FROM " + self.table_name() + " ORDER BY name")
                 return cur.fetchall()
 
+    def count(self):
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM " + self.table_name())
+                return cur.fetchone()[0]
+
+    def page(self, page, page_size):
+        if page < 0 or page_size < 1:
+            raise ValueError("Некорректный номер или размер страницы!")
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute("SELECT name FROM " + self.table_name() +
+                            " ORDER BY name LIMIT %s OFFSET %s", (page_size, page * page_size))
+                return cur.fetchall()
+
     def find_by_name(self, name):
         with self.dbconn.conn:
             with self.dbconn.conn.cursor() as cur:

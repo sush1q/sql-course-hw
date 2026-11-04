@@ -30,6 +30,34 @@ class ExcursionsTable(DbTable):
                             " ORDER BY name, id")
                 return cur.fetchall()
 
+    def count(self, city=None):
+        query = "SELECT COUNT(*) FROM " + self.table_name() + " AS e"
+        params = ()
+        if city is not None:
+            query += (" JOIN " + ExcursionCityTable().table_name() +
+                      " AS ec ON ec.excursion = e.id WHERE ec.city = %s")
+            params = (city,)
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchone()[0]
+
+    def page(self, page, page_size, city=None):
+        if page < 0 or page_size < 1:
+            raise ValueError("Некорректный номер или размер страницы!")
+        query = "SELECT e.id, e.name, e.description, e.cost FROM " + self.table_name() + " AS e"
+        params = []
+        if city is not None:
+            query += (" JOIN " + ExcursionCityTable().table_name() +
+                      " AS ec ON ec.excursion = e.id WHERE ec.city = %s")
+            params.append(city)
+        query += " ORDER BY e.name, e.id LIMIT %s OFFSET %s"
+        params.extend([page_size, page * page_size])
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute(query, params)
+                return cur.fetchall()
+
     @staticmethod
     def validate_cost(value):
         try:
@@ -42,7 +70,7 @@ class ExcursionsTable(DbTable):
             raise ValueError("Укажите стоимость с точностью до копеек!")
         return cost
 
-    def insert_one(self, vals, city=None):
+    def validate_values(self, vals):
         if len(vals) != 3:
             raise ValueError("Нужны название, описание и стоимость экскурсии!")
         name, description, cost = vals
@@ -53,6 +81,10 @@ class ExcursionsTable(DbTable):
         if '\x00' in name or description is not None and '\x00' in description:
             raise ValueError("Текст содержит недопустимый нулевой символ!")
         cost = self.validate_cost(cost)
+        return name.strip(), description, cost
+
+    def insert_one(self, vals, city=None):
+        name, description, cost = self.validate_values(vals)
         with self.dbconn.conn:
             with self.dbconn.conn.cursor() as cur:
                 # В исходной схеме id — integer без автоматической генерации, поэтому приходится переусложнять =(
@@ -68,6 +100,18 @@ class ExcursionsTable(DbTable):
                     cur.execute("INSERT INTO " + ExcursionCityTable().table_name() +
                                 " (city, excursion) VALUES (%s, %s)", (city, excursion_id))
         return excursion_id
+
+    def update_one(self, excursion, city, vals):
+        name, description, cost = self.validate_values(vals)
+        query = ("UPDATE " + self.table_name() +
+                 " AS e SET name = %s, description = %s, cost = %s WHERE e.id = %s "
+                 "AND EXISTS (SELECT 1 FROM " + ExcursionCityTable().table_name() +
+                 " AS ec WHERE ec.excursion = e.id AND ec.city = %s)")
+        with self.dbconn.conn:
+            with self.dbconn.conn.cursor() as cur:
+                cur.execute(query, (name, description, cost, excursion, city))
+                if cur.rowcount == 0:
+                    raise ValueError("Экскурсия не связана с выбранным городом. Обновите список!")
 
     def cities_by_excursion(self, excursion):
         with self.dbconn.conn:
