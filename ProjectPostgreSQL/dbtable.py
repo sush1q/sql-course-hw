@@ -83,4 +83,43 @@ class DbTable:
         cur = self.dbconn.conn.cursor()
         cur.execute(sql)
         return cur.fetchall()        
-        
+
+    fields = "*"
+    sort_order = None
+
+    def insert_query(self, vals, *, columns=None):
+        columns = self.column_names_without_id() if columns is None else columns
+        if len(vals) != len(columns):
+            raise ValueError("Количество значений должно совпадать с количеством столбцов!")
+        placeholders = ", ".join(["%s"] * len(columns))
+        query = f"INSERT INTO {self.table_name()} ({', '.join(columns)}) VALUES ({placeholders})"
+        return query, tuple(vals)
+
+    def insert(self, vals):
+        cur = self.dbconn.conn.cursor()
+        with self.dbconn.conn as cur:
+            cur.execute(*self.insert_query(vals))
+
+    def select(self, fields="*", clause="", params=None):
+        """Столбцы и части запроса задаются в коде, значения передаются отдельно."""
+        cur = self.dbconn.conn.cursor()
+        with self.dbconn.conn as cur:
+            cur.execute(f"SELECT {fields} FROM {self.table_name()} {clause}", params)
+            return cur.fetchall()
+
+    def list_rows(self, where="", params=(), *, page=None):
+        order = self.sort_order or ", ".join(self.primary_key())
+        clause = f"{where} ORDER BY {order}"
+        if page is not None:
+            index, size = page
+            if index < 0 or size < 1:
+                raise ValueError("Некорректный номер или размер страницы!")
+            clause += " LIMIT %s OFFSET %s"
+            params += (size, index * size)
+        return self.select(self.fields, clause, params)
+
+    def count(self, where="", params=()):
+        return self.select("COUNT(*)", where, params)[0][0]
+
+    def page(self, page, page_size, where="", params=()):
+        return self.list_rows(where, params, page=(page, page_size))

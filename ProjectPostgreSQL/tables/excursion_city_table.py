@@ -21,8 +21,4 @@ class ExcursionCityTable(DbTable):
     def insert_one(self, vals):
         if len(vals) != 2:
             raise ValueError("Нужно указать город и экскурсию!")
-        city, excursion = vals
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("INSERT INTO " + self.table_name() + " (city, excursion) VALUES (%s, %s)",
-                            (city, excursion))
+        self.insert(vals)

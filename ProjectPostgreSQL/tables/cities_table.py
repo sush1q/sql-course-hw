@@ -10,74 +10,45 @@ class CitiesTable(DbTable):
         return {"name": ["text", "PRIMARY KEY"]}
 
     def primary_key(self):
-        return ['name']
-
-    def all(self):
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT name FROM " + self.table_name() + " ORDER BY name")
-                return cur.fetchall()
-
-    def count(self):
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM " + self.table_name())
-                return cur.fetchone()[0]
-
-    def page(self, page, page_size):
-        if page < 0 or page_size < 1:
-            raise ValueError("Некорректный номер или размер страницы!")
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT name FROM " + self.table_name() +
-                            " ORDER BY name LIMIT %s OFFSET %s", (page_size, page * page_size))
-                return cur.fetchall()
-
-    def find_by_name(self, name):
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT name FROM " + self.table_name() + " WHERE name = %s", (name,))
-                return cur.fetchone()
+        return ["name"]
 
     @staticmethod
     def validate_name(name):
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("Название города не может быть пустым!")
-        if '\x00' in name:
-            raise ValueError("Название содержит недопустимый нулевой символ!")
+        if not isinstance(name, str) or not name.strip() or '\x00' in name:
+            raise ValueError("Введите непустое название города без нулевых символов!")
         return name.strip()
+
+    def find_by_name(self, name):
+        rows = self.select("name", "WHERE name = %s", (name,))
+        return rows[0] if rows else None
 
     def insert_one(self, vals):
         if len(vals) != 1:
             raise ValueError("Для города необходимо указать одно название!")
-        name = self.validate_name(vals[0])
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("INSERT INTO " + self.table_name() + " (name) VALUES (%s)", (name,))
+        self.insert([self.validate_name(vals[0])])
 
     def update_one(self, old_name, new_name):
         new_name = self.validate_name(new_name)
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT name FROM " + self.table_name() +
-                            " WHERE name = %s", (old_name,))
-                if cur.fetchone() is None:
-                    raise ValueError("Город не найден. Обновите список!")
-                if old_name == new_name:
-                    return False
-                cur.execute("INSERT INTO " + self.table_name() + " (name) VALUES (%s)", (new_name,))
-                cur.execute("UPDATE " + ExcursionCityTable().table_name() +
-                            " SET city = %s WHERE city = %s", (new_name, old_name))
-                cur.execute("DELETE FROM " + self.table_name() + " WHERE name = %s", (old_name,))
+        table = self.table_name()
+        with self.dbconn.conn, self.dbconn.conn.cursor() as cur:
+            cur.execute(f"SELECT 1 FROM {table} WHERE name = %s", (old_name,))
+            if cur.fetchone() is None:
+                raise ValueError("Город не найден. Обновите список!")
+            if old_name == new_name:
+                return False
+
+            cur.execute(*self.insert_query([new_name]))
+            links = ExcursionCityTable().table_name()
+            cur.execute(f"UPDATE {links} SET city = %s WHERE city = %s", (new_name, old_name))
+            cur.execute(f"DELETE FROM {table} WHERE name = %s", (old_name,))
+            if cur.rowcount == 0:
+                raise ValueError("Город не найден. Обновите список!")
         return True
 
     def delete_one(self, name):
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT name FROM " + self.table_name() +
-                            " WHERE name = %s", (name,))
-                if cur.fetchone() is None:
-                    raise ValueError("Город не найден. Обновите список!")
-                cur.execute("DELETE FROM " + ExcursionCityTable().table_name() +
-                            " WHERE city = %s", (name,))
-                cur.execute("DELETE FROM " + self.table_name() + " WHERE name = %s", (name,))
+        with self.dbconn.conn, self.dbconn.conn.cursor() as cur:
+            links = ExcursionCityTable().table_name()
+            cur.execute(f"DELETE FROM {links} WHERE city = %s", (name,))
+            cur.execute(f"DELETE FROM {self.table_name()} WHERE name = %s", (name,))
+            if cur.rowcount == 0:
+                raise ValueError("Город не найден. Обновите список!")
