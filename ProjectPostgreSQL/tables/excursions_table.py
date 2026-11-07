@@ -5,6 +5,10 @@ from tables.excursion_city_table import ExcursionCityTable
 
 
 class ExcursionsTable(DbTable):
+    fields = "id, name, description, cost"
+    sort_order = "name, id"
+    missing_link = "Экскурсия не связана с выбранным городом. Обновите список!"
+
     def table_name(self):
         return self.dbconn.prefix + "excursions"
 
@@ -14,58 +18,44 @@ class ExcursionsTable(DbTable):
                 "description": ["text"],
                 "cost": ["numeric(10,2)", "NOT NULL", "CHECK(cost > 0)"]}
 
-    def all_by_city(self, city):
-        query = ("SELECT e.id, e.name, e.description, e.cost FROM " + self.table_name() +
-                 " AS e JOIN " + ExcursionCityTable().table_name() +
-                 " AS ec ON ec.excursion = e.id WHERE ec.city = %s ORDER BY e.name, e.id")
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute(query, (city,))
-                return cur.fetchall()
+    def _city_filter(self, city):
+        if city is None:
+            return "", ()
+        links = ExcursionCityTable().table_name()
+        return f"WHERE id IN (SELECT excursion FROM {links} WHERE city = %s)", (city,)
 
     def all(self):
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT id, name, description, cost FROM " + self.table_name() +
-                            " ORDER BY name, id")
-                return cur.fetchall()
+        return self.list_rows()
+
+    def all_by_city(self, city):
+        return [] if city is None else self.list_rows(*self._city_filter(city))
 
     def count(self, city=None):
-        query = "SELECT COUNT(*) FROM " + self.table_name() + " AS e"
-        params = ()
-        if city is not None:
-            query += (" JOIN " + ExcursionCityTable().table_name() +
-                      " AS ec ON ec.excursion = e.id WHERE ec.city = %s")
-            params = (city,)
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute(query, params)
-                return cur.fetchone()[0]
+        return super().count(*self._city_filter(city))
 
     def page(self, page, page_size, city=None):
-        if page < 0 or page_size < 1:
-            raise ValueError("Некорректный номер или размер страницы!")
-        query = "SELECT e.id, e.name, e.description, e.cost FROM " + self.table_name() + " AS e"
-        params = []
-        if city is not None:
-            query += (" JOIN " + ExcursionCityTable().table_name() +
-                      " AS ec ON ec.excursion = e.id WHERE ec.city = %s")
-            params.append(city)
-        query += " ORDER BY e.name, e.id LIMIT %s OFFSET %s"
-        params.extend([page_size, page * page_size])
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute(query, params)
-                return cur.fetchall()
+        return super().page(page, page_size, *self._city_filter(city))
+
+    @staticmethod
+    def validate_name(name):
+        if not isinstance(name, str) or not name.strip() or '\x00' in name:
+            raise ValueError("Введите непустое название экскурсии без нулевых символов!")
+        return name.strip()
+
+    @staticmethod
+    def validate_description(value):
+        if value is not None and (not isinstance(value, str) or '\x00' in value):
+            raise ValueError("Описание должно быть текстом без нулевых символов!")
+        return value
 
     @staticmethod
     def validate_cost(value):
         try:
             cost = Decimal(str(value).replace(',', '.'))
+            if not 0 < cost <= Decimal('99999999.99'):
+                raise ValueError("Стоимость должна быть больше нуля и не больше 99999999.99!")
         except InvalidOperation:
-            raise ValueError("Стоимость должна быть числом!")
-        if not cost.is_finite() or not Decimal('0') < cost <= Decimal('99999999.99'):
-            raise ValueError("Стоимость должна быть больше нуля и не больше 99999999.99!")
+            raise ValueError("Стоимость должна быть числом!") from None
         if cost != cost.quantize(Decimal('0.01')):
             raise ValueError("Укажите стоимость с точностью до копеек!")
         return cost
@@ -74,59 +64,46 @@ class ExcursionsTable(DbTable):
         if len(vals) != 3:
             raise ValueError("Нужны название, описание и стоимость экскурсии!")
         name, description, cost = vals
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("Название экскурсии не может быть пустым!")
-        if not (description is None or isinstance(description, str)):
-            raise ValueError("Описание должно быть текстом!")
-        if '\x00' in name or description is not None and '\x00' in description:
-            raise ValueError("Текст содержит недопустимый нулевой символ!")
-        cost = self.validate_cost(cost)
-        return name.strip(), description, cost
+        return self.validate_name(name), self.validate_description(description), self.validate_cost(cost)
 
     def insert_one(self, vals, city=None):
-        name, description, cost = self.validate_values(vals)
+        data = self.validate_values(vals)
         with self.dbconn.conn:
             with self.dbconn.conn.cursor() as cur:
-                # В исходной схеме id — integer без автоматической генерации, поэтому приходится переусложнять =(
-                cur.execute("LOCK TABLE " + self.table_name() + " IN SHARE ROW EXCLUSIVE MODE")
-                cur.execute("SELECT COALESCE(MAX(id)::bigint, 0) + 1 FROM " + self.table_name())
-                excursion_id = cur.fetchone()[0]
-                if excursion_id > 2147483647:
-                    raise ValueError("Невозможно создать новую экскурсию: исчерпан диапазон ключей.")
-                cur.execute("INSERT INTO " + self.table_name() +
-                            " (id, name, description, cost) VALUES (%s, %s, %s, %s)",
-                            (excursion_id, name.strip(), description, cost))
+                cur.execute(f"SELECT COALESCE(MAX(id)::bigint, 0) + 1 FROM {self.table_name()}")
+                excursion = cur.fetchone()[0]
+                if excursion > 2147483647:
+                    raise ValueError("Невозможно создать экскурсию: исчерпан диапазон ключей.")
+                columns = ("id", "name", "description", "cost")
+                cur.execute(*self.insert_query((excursion, *data), columns=columns))
                 if city is not None:
-                    cur.execute("INSERT INTO " + ExcursionCityTable().table_name() +
-                                " (city, excursion) VALUES (%s, %s)", (city, excursion_id))
-        return excursion_id
+                    cur.execute(*ExcursionCityTable().insert_query([city, excursion]))
+        return excursion
 
     def update_one(self, excursion, city, vals):
-        name, description, cost = self.validate_values(vals)
-        query = ("UPDATE " + self.table_name() +
-                 " AS e SET name = %s, description = %s, cost = %s WHERE e.id = %s "
-                 "AND EXISTS (SELECT 1 FROM " + ExcursionCityTable().table_name() +
-                 " AS ec WHERE ec.excursion = e.id AND ec.city = %s)")
+        data = self.validate_values(vals)
+        links = ExcursionCityTable().table_name()
         with self.dbconn.conn:
             with self.dbconn.conn.cursor() as cur:
-                cur.execute(query, (name, description, cost, excursion, city))
+                cur.execute(
+                    f"UPDATE {self.table_name()} SET name = %s, description = %s, cost = %s "
+                    f"WHERE id = %s AND id IN (SELECT excursion FROM {links} WHERE city = %s)",
+                    (*data, excursion, city),
+                )
                 if cur.rowcount == 0:
-                    raise ValueError("Экскурсия не связана с выбранным городом. Обновите список!")
+                    raise ValueError(self.missing_link)
 
     def cities_by_excursion(self, excursion):
-        with self.dbconn.conn:
-            with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT city FROM " + ExcursionCityTable().table_name() +
-                            " WHERE excursion = %s ORDER BY city", (excursion,))
-                return cur.fetchall()
+        return ExcursionCityTable().select("city", "WHERE excursion = %s ORDER BY city", (excursion,))
 
     def delete_one(self, excursion, city):
+        links = ExcursionCityTable().table_name()
         with self.dbconn.conn:
             with self.dbconn.conn.cursor() as cur:
-                cur.execute("SELECT excursion FROM " + ExcursionCityTable().table_name() +
-                            " WHERE excursion = %s AND city = %s", (excursion, city))
+                cur.execute(f"SELECT 1 FROM {links} WHERE excursion = %s AND city = %s", (excursion, city))
                 if cur.fetchone() is None:
-                    raise ValueError("Экскурсия не связана с выбранным городом. Обновите список!")
-                cur.execute("DELETE FROM " + ExcursionCityTable().table_name() +
-                            " WHERE excursion = %s", (excursion,))
-                cur.execute("DELETE FROM " + self.table_name() + " WHERE id = %s", (excursion,))
+                    raise ValueError(self.missing_link)
+                cur.execute(f"DELETE FROM {links} WHERE excursion = %s", (excursion,))
+                cur.execute(f"DELETE FROM {self.table_name()} WHERE id = %s", (excursion,))
+                if cur.rowcount == 0:
+                    raise ValueError(self.missing_link)
