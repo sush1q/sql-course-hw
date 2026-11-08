@@ -97,15 +97,17 @@ class DbTable:
 
     def insert(self, vals):
         cur = self.dbconn.conn.cursor()
-        with self.dbconn.conn as cur:
-            cur.execute(*self.insert_query(vals))
+        with self.dbconn.conn:
+            with cur:
+                cur.execute(*self.insert_query(vals))
 
     def select(self, fields="*", clause="", params=None):
         """Столбцы и части запроса задаются в коде, значения передаются отдельно."""
         cur = self.dbconn.conn.cursor()
-        with self.dbconn.conn as cur:
-            cur.execute(f"SELECT {fields} FROM {self.table_name()} {clause}", params)
-            return cur.fetchall()
+        with self.dbconn.conn:
+            with cur:
+                cur.execute(f"SELECT {fields} FROM {self.table_name()} {clause}", params)
+                return cur.fetchall()
 
     def list_rows(self, where="", params=(), *, page=None):
         order = self.sort_order or ", ".join(self.primary_key())
