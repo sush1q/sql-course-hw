@@ -439,6 +439,9 @@ if __name__ == "__main__":
     except psycopg2.Error:
         print("Не удалось подключиться к БД. Проверьте сервер и config.yaml.")
         sys.exit(1)
+    except ValueError as error:
+        print(error)
+        sys.exit(1)
     except (OSError, KeyError, TypeError, yaml.YAMLError):
         print("Не удалось прочитать настройки подключения. Проверьте config.yaml.")
         sys.exit(1)
