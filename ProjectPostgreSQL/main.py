@@ -3,6 +3,7 @@ import sys
 
 import psycopg2
 import yaml
+from psycopg2 import sql
 
 from dbconnection import DbConnection
 from dbtable import DbTable
@@ -98,7 +99,7 @@ class Menu:
             psycopg2.errors.UniqueViolation: "Запись с такими значениями уже существует.",
             psycopg2.errors.ForeignKeyViolation: "Операция нарушает связь между записями.",
             psycopg2.errors.DependentObjectsStillExist: "Удаление заблокировано зависимыми объектами базы.",
-            psycopg2.errors.UndefinedTable: "Таблица не найдена. Проверьте базу и префикс таблиц.",
+            psycopg2.errors.UndefinedTable: "Таблица не найдена. Выполните инициализацию в главном меню или проверьте префикс таблиц.",
             psycopg2.errors.InsufficientPrivilege: "Недостаточно прав для этой операции.",
         }
         print(messages.get(type(error), "Не удалось выполнить запрос к базе данных."))
@@ -352,52 +353,55 @@ class Main(Menu):
         self.excursions_menu = ExcursionsMenu(self.cities, self.excursions, self.links)
         self.cities_menu = CitiesMenu(self.cities, self.excursions_menu)
 
-    def db_init(self):
-        for table in (self.cities, self.excursions, self.links):
-            table.create()
-
-    def db_insert_somethings(self):
-        for name in ("Токио", "Киото", "Осака"):
-            self.cities.insert_one([name])
-        self.excursions.insert_one(["Обзорная экскурсия по Токио", "Знакомство с городом.", "8500"], "Токио")
-
-    def db_drop(self):
-        tables = (self.links, self.excursions, self.cities)
-        # Эталонный drop фиксирует каждое удаление отдельно. Сначала проверяем внешние ключи.
-        names = [table.table_name() for table in tables]
-        with self.connection.conn.cursor() as cur:
-            cur.execute("""
-                WITH targets AS (
-                    SELECT to_regclass(name) AS oid FROM unnest(%s::text[]) AS t(name)
-                )
-                SELECT 1 FROM pg_catalog.pg_constraint
-                WHERE contype = 'f'
-                  AND confrelid IN (SELECT oid FROM targets)
-                  AND NOT EXISTS (SELECT 1 FROM targets WHERE oid = conrelid)
-                LIMIT 1
-            """, (names,))
-            if cur.fetchone() is not None:
-                raise psycopg2.errors.DependentObjectsStillExist("На таблицы проекта ссылаются внешние ключи.")
-        for table in tables:
-            table.drop()
-
     def show_main_menu(self):
         print("""Добро пожаловать!
     1 - просмотр городов
     2 - сброс и инициализация таблиц
     9 - выход""")
 
+    def sample_data(self):
+        cities = (
+            ("Токио",), ("Киото",), ("Осака",), ("Нара",), ("Ито",),
+        )
+        excursions = (
+            (1, "Обзорная экскурсия по Токио", "Посещение Асакусы, Сибуи и Синдзюку.", "8500.00"),
+            (2, "Храмы Киото", "Экскурсия по известным храмам и историческим районам Киото.", "9000.00"),
+            (3, "Замок Осака", "Посещение замка Осака и прогулка по центральной части города.", "7000.00"),
+            (4, "Историческая Нара", "Посещение парка Нара и храма Тодай-дзи.", "7500.00"),
+            (5, "Традиционная Япония", "Знакомство с традиционной японской архитектурой и культурой.", "8000.00"),
+        )
+        links = (
+            (1, "Токио"), (2, "Киото"), (3, "Осака"), (4, "Нара"),
+            (5, "Киото"), (5, "Нара"), (5, "Ито"),
+        )
+        return (
+            (self.cities, ("name",), cities),
+            (self.excursions, ("id", "name", "description", "cost"), excursions),
+            (self.links, ("excursion", "city"), links),
+        )
+
     def reset_tables(self):
         if not self.confirm("Удалить данные городов и экскурсий и заполнить примерами?"):
             return
-        try:
-            self.db_drop()
-            self.db_init()
-            self.db_insert_somethings()
-        except psycopg2.Error:
-            if not self.connection.conn.closed:
-                self.connection.conn.rollback()
-            raise
+
+        data = self.sample_data()
+        with self.connection.conn:
+            with self.connection.conn.cursor() as cur:
+                cur.execute("SELECT pg_catalog.parse_ident(%s)", (self.cities.table_name(),))
+                name_parts = cur.fetchone()[0]
+                if len(name_parts) == 2:
+                    schema = name_parts[0]
+                    cur.execute("SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = %s", (schema,))
+                    if cur.fetchone() is None:
+                        cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(schema)))
+
+                for table, _, _ in reversed(data):
+                    cur.execute(table.drop_query())
+                for table, columns, rows in data:
+                    cur.execute(table.create_query())
+                    for row in rows:
+                        cur.execute(*table.insert_query(row, columns=columns))
+
         print("Таблицы созданы заново!")
 
     def main_cycle(self):

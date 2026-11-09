@@ -5,6 +5,7 @@ import psycopg2
 class DbConnection:
 
     def __init__(self, config):
+        self.conn = None
         self.dbname = config.dbname
         self.user = config.user
         self.password = config.password
